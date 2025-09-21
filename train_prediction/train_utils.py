@@ -24,24 +24,40 @@ def set_seed(CUR_SEED):
 
 
 class DrivingData(Dataset):
-    def __init__(self, data_list, n_neighbors):
+    def __init__(self, data_list, n_neighbors, n_candidates):
         self.data_list = data_list
         self._n_neighbors = n_neighbors
+        self._n_candidates = n_candidates
+        self._time_length = 80
 
     def __len__(self):
         return len(self.data_list)
 
+    def process_ego_trajectory(self, ego_trajectory):
+        trajectory = np.zeros((self._n_candidates, self._time_length, 6), dtype=np.float32)
+        if ego_trajectory.shape[0] > self._n_candidates:
+            ego_trajectory = ego_trajectory[:self._n_candidates]
+
+        if ego_trajectory.shape[1] < self._time_length:
+            trajectory[:ego_trajectory.shape[0], :ego_trajectory.shape[1]] = ego_trajectory
+        else:
+            trajectory[:ego_trajectory.shape[0]] = ego_trajectory
+
+        return trajectory
+
     def __getitem__(self, idx):
-        data = np.load(self.data_list[idx],allow_pickle=True)
+        data = np.load(self.data_list[idx], allow_pickle=True)
         ego = data['ego_agent_past']
         neighbors = data['neighbor_agents_past']
-        route_lanes = data['route_lanes'] 
+        route_lanes = data['route_lanes']
         map_lanes = data['map_lanes']
         map_crosswalks = data['map_crosswalks']
         ego_future_gt = data['ego_agent_future']
         neighbors_future_gt = data['neighbor_agents_future'][:self._n_neighbors]
+        first_stage = self.process_ego_trajectory(data['first_stage_ego_trajectory'][..., :6])
+        second_stage = self.process_ego_trajectory(data['second_stage_ego_trajectory'][..., :6])
 
-        return ego, neighbors, map_lanes, map_crosswalks, route_lanes, ego_future_gt,neighbors_future_gt
+        return ego, neighbors, map_lanes, map_crosswalks, route_lanes, ego_future_gt, neighbors_future_gt, first_stage, second_stage
 
 
 def calc_loss(neighbors, ego, ego_regularization, scores, weights, ego_gt, neighbors_gt, neighbors_valid):
@@ -116,7 +132,7 @@ def MFMA_loss(predictions, scores, ground_truth, weights):
     label = torch.zeros(scores.shape[0], dtype=torch.long).to(scores.device)
     irl_loss = F.cross_entropy(scores, label)
 
-    return cmp_loss.mean() + irl_loss
+    return 1.2* cmp_loss.mean() + irl_loss
 
 def motion_metrics(prediction_trajectories, neighbors_future,scores, weights):
     best_idx = torch.argmax(scores, dim=-1)

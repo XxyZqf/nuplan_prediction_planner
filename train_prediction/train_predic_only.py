@@ -24,13 +24,17 @@ def train_epoch(data_loader, encoder, optimizer):
                 'map_crosswalks': batch[3].to(args.device),
                 'route_lanes': batch[4].to(args.device)
             }
+            # print(f'batch shape: {len(batch)}')
 
             ego_gt_future = batch[5].to(args.device)
             neighbors_gt_future = batch[6].to(args.device)
-            neighbors_gt_future = neighbors_gt_future[:, :, -40:, :]  # 只取最后40个时间步
-            ego_gt_future = ego_gt_future[:, -40:, :]  # 只取最后40个时间步
+            # neighbors_gt_future = neighbors_gt_future[:, :, :40, :]  # 只取最后40个时间步
+            # ego_gt_future = ego_gt_future[:, 40:, :]  # 只取最后40个时间步
             # print('neighbors_gt_future[..., :3] shape1:', neighbors_gt_future[..., :3].shape)
             neighbors_future_valid = torch.ne(neighbors_gt_future[..., :3], 0)
+            second_stage_trajectory = batch[8].to(args.device)
+            # second_stage_trajectory = second_stage_trajectory[:, :, :40, :]  # 只取40个时间步
+
             # print(f'ego_gt_future: {ego_gt_future.shape}...neighbors_gt_future: {neighbors_gt_future.shape}')
             ground_truth = torch.cat([ego_gt_future.unsqueeze(1), neighbors_gt_future], dim=1)
             # print('ground_truth.shape:', ground_truth.shape)
@@ -39,7 +43,8 @@ def train_epoch(data_loader, encoder, optimizer):
             predictions, scores = encoder( inputs['ego_agent_past'],
                                             inputs['neighbor_agents_past'],
                                             inputs['map_lanes'],
-                                            inputs['map_crosswalks'])
+                                            inputs['map_crosswalks'],
+                                           second_stage_trajectory,80)
 
             loss = MFMA_loss(predictions, scores, neighbors_gt_future, neighbors_future_valid)  # multi-future multi-agent loss
 
@@ -82,11 +87,11 @@ def valid_epoch(data_loader, encoder):
 
             ego_gt_future = batch[5].to(args.device)
             neighbors_gt_future = batch[6].to(args.device)
-            neighbors_gt_future = neighbors_gt_future[:, :, -40:, :]  # 只取最后40个时间步
-            ego_gt_future = ego_gt_future[:, -40:, :]  # 只取最后40个时间步
 
             # print('neighbors_gt_future[..., :3] shape1:', neighbors_gt_future[..., :3].shape)
             neighbors_future_valid = torch.ne(neighbors_gt_future[..., :3], 0)
+            second_stage_trajectory = batch[8].to(args.device)
+
             # print(f'ego_gt_future: {ego_gt_future.shape}...neighbors_gt_future: {neighbors_gt_future.shape}')
             ground_truth = torch.cat([ego_gt_future.unsqueeze(1), neighbors_gt_future], dim=1)
             # print('ground_truth.shape:', ground_truth.shape)
@@ -96,7 +101,8 @@ def valid_epoch(data_loader, encoder):
                 predictions, scores = encoder(inputs['ego_agent_past'],
                                               inputs['neighbor_agents_past'],
                                               inputs['map_lanes'],
-                                              inputs['map_crosswalks'])
+                                              inputs['map_crosswalks'],
+                                              second_stage_trajectory,80)
 
                 loss = MFMA_loss(predictions, scores, neighbors_gt_future,
                                  neighbors_future_valid)  # multi-future multi-agent loss
@@ -143,8 +149,8 @@ def model_training(args):
     batch_size = args.batch_size
 
     # set up data loaders
-    train_set = DrivingData(glob.glob(os.path.join(args.train_set, '*.npz')), args.num_neighbors)
-    valid_set = DrivingData(glob.glob(os.path.join(args.valid_set, '*.npz')), args.num_neighbors)
+    train_set = DrivingData(glob.glob(os.path.join(args.train_set, '*.npz')), args.num_neighbors, args.num_candidates)
+    valid_set = DrivingData(glob.glob(os.path.join(args.valid_set, '*.npz')), args.num_neighbors,  args.num_candidates)
     train_loader = DataLoader(train_set, batch_size=batch_size, num_workers=os.cpu_count())
     valid_loader = DataLoader(valid_set, batch_size=batch_size, num_workers=os.cpu_count())
     logging.info("Dataset Prepared: {} train data, {} validation data\n".format(len(train_set), len(valid_set)))
@@ -190,8 +196,8 @@ if __name__ == "__main__":
     parser.add_argument('--num_neighbors', type=int, help='number of neighbor agents to predict', default=10)
     parser.add_argument('--num_candidates', type=int, help='number of max candidate trajectories', default=30)
     parser.add_argument('--variable_weights', type=bool, help='use variable cost weights', default=False)
-    parser.add_argument('--train_epochs', type=int, help='epochs of training', default=300)
-    parser.add_argument('--batch_size', type=int, help='batch size', default=16)
+    parser.add_argument('--train_epochs', type=int, help='epochs of training', default=30)
+    parser.add_argument('--batch_size', type=int, help='batch size', default=32)
     parser.add_argument('--learning_rate', type=float, help='learning rate', default=2e-4)
     parser.add_argument('--device', type=str, help='run on which device', default='cuda')
     args = parser.parse_args()

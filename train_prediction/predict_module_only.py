@@ -3,7 +3,6 @@ from torch import nn
 import torch.nn.functional as F
 import math
 
-
 # Agent history encoder
 class AgentEncoder(nn.Module):
     def __init__(self, agent_dim):
@@ -112,12 +111,12 @@ class CrossTransformer(nn.Module):
         value：值向量，与键向量对应的数据值
         mask：可选的掩码，用于标记哪些位置的数据是有效的（非填充值）
         """
-        # print(f'query.shape: {query.shape}')
+        # print(f'query1.shape: {query.shape}')
         # print(f'key.shape: {key.shape}')
         # print(f'value.shape: {value.shape}')
         attention_output, _ = self.cross_attention(query, key, value, key_padding_mask=mask)
         output = self.transformer(attention_output)
-
+        # print(f'output_cross_transformer.shape: {output.shape}')
         return output
 
 # MultiModalTransformer类是一个多模态注意力融合模块，位于自动驾驶预测规划模型中，
@@ -183,15 +182,15 @@ class Agent2Map(nn.Module):
         mask是可选的掩码，用于标记哪些位置的数据是有效的（非填充值）
         """
         query = actor.unsqueeze(1)
+
         print(f'actor.shape: {actor.shape}')
         print(f'lanes.shape: {lanes.shape}')
         print(f'crosswalks.shape: {crosswalks.shape}')
         print(f'query.shape: {query.shape}')
         print(f'lanes.shape[1]: {lanes.shape[1]}')
-        lanes_actor = [self.lane_attention(query, lanes, lanes) for i in range(lanes.shape[1])]
-        crosswalks_actor = [self.crosswalk_attention(query, crosswalks, crosswalks) for i in
-                            range(crosswalks.shape[1])]
-        print(f'lanes_actor.shape: {len(lanes_actor)}')
+        lanes_actor = [self.lane_attention(query, lanes, lanes)]#for i in range(lanes.shape[1])
+        crosswalks_actor = [self.crosswalk_attention(query, crosswalks, crosswalks) ]#for i inrange(crosswalks.shape[1])
+        print(f'len(lanes_actor): {len(lanes_actor)}')
         map_actor = torch.cat(lanes_actor + crosswalks_actor, dim=1)
         output = self.map_attention(query, map_actor, map_actor, mask).squeeze(2)
 
@@ -289,6 +288,7 @@ class CrossAttention(nn.Module):
 
         return output
 
+#DIPP的评分机制
 class Score(nn.Module):
     """
     self.reduce：特征降维网络，将512维输入压缩到256维，包含Dropout(0.1)防止过拟合
@@ -316,11 +316,119 @@ class Score(nn.Module):
         # print(f'scores.shape = {scores.shape}')
         return scores
 
+#DTPP的评分机制
+class ScoreDecoder(nn.Module):
+    def __init__(self, variable_cost=False):
+        super(ScoreDecoder, self).__init__()
+        self._n_latent_features = 4
+        self._variable_cost = variable_cost
+
+        self.interaction_feature_encoder = nn.Sequential(nn.Linear(10, 64), nn.ReLU(), nn.Linear(64, 256))
+        self.interaction_feature_decoder = nn.Sequential(nn.Linear(256, 64), nn.ELU(),
+                                                         nn.Linear(64, self._n_latent_features), nn.Sigmoid())
+        self.weights_decoder = nn.Sequential(nn.Linear(256, 64), nn.ELU(), nn.Linear(64, self._n_latent_features + 4),
+                                             nn.Softplus())
+
+    def get_hardcoded_features(self, ego_traj, max_time):
+        # ego_traj: B, M, T, 6
+        # x, y, yaw, v, a, r
+
+        speed = ego_traj[:, :, :max_time, 3]
+        acceleration = ego_traj[:, :, :max_time, 4]
+        jerk = torch.diff(acceleration, dim=-1) / 0.1
+        jerk = torch.cat((jerk[:, :, :1], jerk), dim=-1)
+        curvature = ego_traj[:, :, :max_time, 5]
+        lateral_acceleration = speed ** 2 * curvature
+
+        speed = -speed.mean(-1).clip(0, 15) / 15
+        acceleration = acceleration.abs().mean(-1).clip(0, 4) / 4
+        jerk = jerk.abs().mean(-1).clip(0, 6) / 6
+        lateral_acceleration = lateral_acceleration.abs().mean(-1).clip(0, 5) / 5
+
+        features = torch.stack((speed, acceleration, jerk, lateral_acceleration), dim=-1)
+
+        return features
+
+    def calculate_collision(self, ego_traj, agent_traj, agents_states, max_time):
+        # ego_traj: B, T, 3
+        # agent_traj: B, N, T, 3
+        # agents_states: B, N, 11
+
+        agent_mask = torch.ne(agents_states.sum(-1), 0)  # B, N
+
+        # Compute the distance between the two agents
+        dist = torch.norm(ego_traj[:, None, :max_time, :2] - agent_traj[:, :, :max_time, :2], dim=-1)
+
+        # Compute the collision cost
+        cost = torch.exp(-0.2 * dist ** 2) * agent_mask[:, :, None]
+        cost = cost.sum(-1).sum(-1)
+
+        return cost
+
+    def get_latent_interaction_features(self, ego_traj, agent_traj, agents_states, max_time):
+        # ego_traj: B, T, 6
+        # agent_traj: B, N, T, 3
+        # agents_states: B, N, 11
+
+        # Get agent mask
+        agent_mask = torch.ne(agents_states.sum(-1), 0)  # B, N
+
+        # Get relative attributes of agents
+        relative_yaw = agent_traj[:, :, :max_time, 2] - ego_traj[:, None, :max_time, 2]
+        relative_yaw = torch.atan2(torch.sin(relative_yaw), torch.cos(relative_yaw))
+        relative_pos = agent_traj[:, :, :max_time, :2] - ego_traj[:, None, :max_time, :2]
+        relative_pos = torch.stack([relative_pos[..., 0] * torch.cos(relative_yaw),
+                                    relative_pos[..., 1] * torch.sin(relative_yaw)], dim=-1)
+        agent_velocity = torch.diff(agent_traj[:, :, :max_time, :2], dim=-2) / 0.1
+        agent_velocity = torch.cat((agent_velocity[:, :, :1, :], agent_velocity), dim=-2)
+        ego_velocity_x = ego_traj[:, :max_time, 3] * torch.cos(ego_traj[:, :max_time, 2])
+        ego_velocity_y = ego_traj[:, :max_time, 3] * torch.sin(ego_traj[:, :max_time, 2])
+        relative_velocity = torch.stack([(agent_velocity[..., 0] - ego_velocity_x[:, None]) * torch.cos(relative_yaw),
+                                         (agent_velocity[..., 1] - ego_velocity_y[:, None]) * torch.sin(relative_yaw)],
+                                        dim=-1)
+        relative_attributes = torch.cat((relative_pos, relative_yaw.unsqueeze(-1), relative_velocity), dim=-1)
+
+        # Get agent attributes
+        agent_attributes = agents_states[:, :, None, 6:].expand(-1, -1, relative_attributes.shape[2], -1)
+        attributes = torch.cat((relative_attributes, agent_attributes), dim=-1)
+        attributes = attributes * agent_mask[:, :, None, None]
+
+        # Encode relative attributes and decode to latent interaction features
+        features = self.interaction_feature_encoder(attributes)
+        features = features.max(1).values.mean(1)
+        features = self.interaction_feature_decoder(features)
+
+        return features
+
+    def forward(self, ego_traj, ego_encoding, agents_traj, agents_states, timesteps):
+        ego_traj_features = self.get_hardcoded_features(ego_traj, timesteps)
+        if not self._variable_cost:
+            ego_encoding = torch.ones_like(ego_encoding)
+        weights = self.weights_decoder(ego_encoding)
+        ego_mask = torch.ne(ego_traj.sum(-1).sum(-1), 0)
+
+        scores = []
+        # print(f'agents_traj: {agents_traj.shape}')
+        for i in range(agents_traj.shape[1]):
+            # print(f'ego_traj_features: {ego_traj_features.shape}')
+            hardcoded_features = ego_traj_features[:, i]
+            interaction_features = self.get_latent_interaction_features(ego_traj[:, i], agents_traj[:, i],
+                                                                        agents_states, timesteps)
+            features = torch.cat((hardcoded_features, interaction_features), dim=-1)
+            score = -torch.sum(features * weights, dim=-1)
+            collision_feature = self.calculate_collision(ego_traj[:, i], agents_traj[:, i], agents_states, timesteps)
+            score += -10 * collision_feature
+            scores.append(score)
+
+        scores = torch.stack(scores, dim=1)
+        scores = torch.where(ego_mask, scores, float('-inf'))
+
+        return scores, weights
 
 # Build predictor
 class Predictor(nn.Module):
-    def __init__(self, future_steps,dim=256, layers=2, heads=8, dropout=0.1,neighbors=10, max_time=4,
-                 max_branch=59, n_heads=8,  variable_cost=False):
+    def __init__(self, future_steps,dim=256, layers=2, heads=8, dropout=0.1,neighbors=10, max_time=8,
+                 max_branch=30, n_heads=8,  variable_cost=False):
         super(Predictor, self).__init__()
         self._future_steps = future_steps
         self._lane_len = 50
@@ -348,9 +456,9 @@ class Predictor(nn.Module):
         self._time = max_time
         self._branch = max_branch
         self.predict = AgentDecoder(max_time, max_branch)
-        self.score = Score()
+        self.scorer = ScoreDecoder()
 
-    def forward(self, ego, neighbors, map_lanes, map_crosswalks):
+    def forward(self, ego, neighbors, map_lanes, map_crosswalks,ego_traj_inputs,timesteps):
         # agents encoding
         actors = torch.cat([ego[:, None, :, :5], neighbors[..., :5]], dim=1)  # 数据拼接
         # print(f'actors.shape: {actors.shape}')
@@ -370,20 +478,19 @@ class Predictor(nn.Module):
         map_mask= torch.cat([lanes_mask, crosswalks_mask], dim=1)
         mask = torch.cat([actors_mask, lanes_mask, crosswalks_mask], dim=1)
         encoding = self.fusion_encoder(input, src_key_padding_mask=mask)
+        # 将 encoding 从 16×236 补齐为 16×240
+        supplement = torch.zeros(encoding.shape[0], 240 - encoding.shape[1],encoding.shape[2], device=encoding.device)
+        encoding = torch.cat([encoding, supplement], dim=1)
         # print(f'encoding.shape: {encoding.shape}')
         # encoding
         # 3. 准备预测所需的当前状态
         current_states = neighbors[:, :self._neighbors, -1]
         # print(f'current_states.shape: {current_states.shape}')
 
-        # 新增融合机制
-        # 计算智能体之间的交互
-        agent_agent = self.agent_agent(encoded_actors, actors_mask)
-
-
         # 4. 生成预测和评分
         agents_trajecotries = []
         for i in range(self._neighbors):
+            # print(f'encoding: {encoding.shape}')
             trajectory = self.predict(encoding, current_states[:, i])
             agents_trajecotries.append(trajectory)
 
@@ -391,7 +498,8 @@ class Predictor(nn.Module):
         # print(f'predictions.shape: {predictions.shape}')
 
         # 评分
-        scores = self.score(encoding)
+        # scores = self.score(encoding)
+        scores, weights = self.scorer(ego_traj_inputs,encoding[:, 0], predictions, current_states, timesteps)
 
         return predictions, scores
 

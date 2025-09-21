@@ -38,13 +38,15 @@ def train_epoch(data_loader, encoder, decoder, optimizer):
 
             # first stage prediction
             first_stage_trajectory = batch[7].to(args.device)
+            print(f'batch shape: {batch[7].shape}')
             neighbors_trajectories, scores, ego, weights = \
                 decoder(encoder_outputs, first_stage_trajectory, inputs['neighbor_agents_past'], 30)
             loss = calc_loss(neighbors_trajectories, first_stage_trajectory, ego, scores, weights, \
                              ego_gt_future, neighbors_gt_future, neighbors_future_valid)
-
             # second stage prediction
             second_stage_trajectory = batch[8].to(args.device)
+            print(f'first_stage_trajectory: {first_stage_trajectory.shape}....second_stage_trajectory: {second_stage_trajectory.shape}')
+
             neighbors_trajectories, scores, ego, weights = \
                 decoder(encoder_outputs, second_stage_trajectory, inputs['neighbor_agents_past'], 80)
             loss += 0.2 * calc_loss(neighbors_trajectories, second_stage_trajectory, ego, scores, weights, \
