@@ -22,25 +22,25 @@ class Encoder(nn.Module):
         ego = inputs['ego_agent_past']
         neighbors = inputs['neighbor_agents_past']
         actors = torch.cat([ego[:, None, :, :5], neighbors[..., :5]], dim=1)# 数据拼接
-        print(f'ego shape: {ego.shape}..neighbors shape: {neighbors.shape}.. actors shape: {actors.shape}')
+        # print(f'ego shape: {ego.shape}..neighbors shape: {neighbors.shape}.. actors shape: {actors.shape}')
         # agent encoding
         encoded_ego = self.ego_encoder(ego)
         encoded_neighbors = [self.agent_encoder(neighbors[:, i]) for i in range(neighbors.shape[1])]
         encoded_actors = torch.stack([encoded_ego] + encoded_neighbors, dim=1)#torch.stack 函数用于沿着一个新维度对输入张量序列进行连接
         actors_mask = torch.eq(actors[:, :, -1].sum(-1), 0)
-        print(f'encoded_ego.shape = {encoded_ego.shape}..encoded_actors.shape = {encoded_actors.shape}')
+        # print(f'encoded_ego.shape = {encoded_ego.shape}..encoded_actors.shape = {encoded_actors.shape}')
         # vector maps
         map_lanes = inputs['map_lanes']
         map_crosswalks = inputs['map_crosswalks']
-        print(f'map_lanes.shape = {map_lanes.shape}..map_crosswalks.shape = {map_crosswalks.shape}')
+        # print(f'map_lanes.shape = {map_lanes.shape}..map_crosswalks.shape = {map_crosswalks.shape}')
         # map encoding
         encoded_map_lanes, lanes_mask = self.lane_encoder(map_lanes)
         encoded_map_crosswalks, crosswalks_mask = self.crosswalk_encoder(map_crosswalks)
-        print(f'encoded_map_lanes.shape = {encoded_map_lanes.shape}')
-        print(f'encoded_map_crosswalks.shape = {encoded_map_crosswalks.shape}')
+        # print(f'encoded_map_lanes.shape = {encoded_map_lanes.shape}')
+        # print(f'encoded_map_crosswalks.shape = {encoded_map_crosswalks.shape}')
         # attention fusion encoding
         input = torch.cat([encoded_actors, encoded_map_lanes, encoded_map_crosswalks], dim=1)
-        print(f'input.shape = {input.shape}')
+        # print(f'input.shape = {input.shape}')
         mask = torch.cat([actors_mask, lanes_mask, crosswalks_mask], dim=1)
         encoding = self.fusion_encoder(input, src_key_padding_mask=mask)
 
@@ -86,9 +86,9 @@ class Decoder(nn.Module):
     def forward(self, encoder_outputs, ego_traj_inputs, agents_states, timesteps):
         # get inputs
         current_states = agents_states[:, :self._neighbors, -1]
-        print(f'current_states.shape = {current_states.shape}')
+        # print(f'current_states.shape = {current_states.shape}')
         encoding, encoding_mask = encoder_outputs['encoding'], encoder_outputs['mask']
-        print(f'encoding: {encoding.shape}')
+        # print(f'encoding: {encoding.shape}')
         # xxy 屏蔽和树相关
         ego_traj_ori_encoding = self.ego_traj_encoder(ego_traj_inputs)
         branch_embedding = ego_traj_ori_encoding[:, :, timesteps-1]
@@ -113,7 +113,7 @@ class Decoder(nn.Module):
             # learnable query
             query = encoding[:, i+1, None, None]  + tree_embedding
             query = torch.reshape(query, (query.shape[0], -1, query.shape[-1]))
-            print(f'query: {query.shape}')
+            # print(f'query: {query.shape}')
             # decode from environment inputs
             env_decoding = self.environment_decoder(query, encoding, encoding, env_mask)
 
@@ -123,15 +123,15 @@ class Decoder(nn.Module):
 
             # trajectory outputs
             decoding = torch.cat([env_decoding, ego_condition_decoding], dim=-1)
-            print(f'env_decoding.shape = {env_decoding.shape}...ego_condition_decoding.shape = {ego_condition_decoding.shape}...decoding.shape = {decoding.shape}')
+            # print(f'env_decoding.shape = {env_decoding.shape}...ego_condition_decoding.shape = {ego_condition_decoding.shape}...decoding.shape = {decoding.shape}')
             trajectory = self.agent_traj_decoder(decoding, current_states[:, i])
             agents_trajecotries.append(trajectory)
         # print(f'agents_trajecotries = {agents_trajecotries}')
         # score outputs
         agents_trajecotries = torch.stack(agents_trajecotries, dim=2)
-        print(f'agents_trajecotries.shape = {agents_trajecotries.shape}')
+        # print(f'agents_trajecotries.shape = {agents_trajecotries.shape}')
         scores, weights = self.scorer(ego_traj_inputs, encoding[:, 0], agents_trajecotries, current_states, timesteps)
-        print(f'scores.shape = {scores.shape}')
+        # print(f'scores.shape = {scores.shape}')
         # ego regularization
         ego_traj_regularization = self.ego_traj_decoder(encoding[:, 0])
         ego_traj_regularization = torch.reshape(ego_traj_regularization, (ego_traj_regularization.shape[0], 80, 3))

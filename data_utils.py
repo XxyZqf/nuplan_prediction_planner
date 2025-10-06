@@ -717,7 +717,7 @@ def create_map_raster(lanes, crosswalks, route_lanes):
 
 def draw_trajectory(ego_trajectory, agent_trajectories):
     # plot ego 
-    plt.plot(ego_trajectory[:, 0], ego_trajectory[:, 1], 'r', linewidth=3, zorder=3)
+    # plt.plot(ego_trajectory[:, 0], ego_trajectory[:, 1], 'r', linewidth=3, zorder=3)
 
     # plot others
     for i in range(agent_trajectories.shape[0]):

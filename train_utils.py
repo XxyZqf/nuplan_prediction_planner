@@ -62,7 +62,7 @@ class DrivingData(Dataset):
 def calc_loss(neighbors, ego, ego_regularization, scores, weights, ego_gt, neighbors_gt, neighbors_valid):
     mask = torch.ne(ego.sum(-1), 0)
     neighbors = neighbors[:, 0] * neighbors_valid
-    print(f'Neighbors valid: {neighbors_valid}...neighbors[:, 0]: {neighbors[:, 0]}')
+    # print(f'Neighbors valid: {neighbors_valid}...neighbors[:, 0]: {neighbors[:, 0]}')
     cmp_loss = F.smooth_l1_loss(neighbors, neighbors_gt, reduction='none')
     cmp_loss = cmp_loss * mask[:, 0, None, :, None]
     cmp_loss = cmp_loss.sum() / mask[:, 0].sum()

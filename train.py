@@ -9,6 +9,7 @@ from tqdm import tqdm
 from scenario_tree_prediction import Encoder, Decoder
 from torch.utils.data import DataLoader
 from train_utils import *
+import matplotlib.pyplot as plt
 
 
 def train_epoch(data_loader, encoder, decoder, optimizer):
@@ -38,14 +39,14 @@ def train_epoch(data_loader, encoder, decoder, optimizer):
 
             # first stage prediction
             first_stage_trajectory = batch[7].to(args.device)
-            print(f'batch shape: {batch[7].shape}')
+            # print(f'batch shape: {batch[7].shape}')
             neighbors_trajectories, scores, ego, weights = \
                 decoder(encoder_outputs, first_stage_trajectory, inputs['neighbor_agents_past'], 30)
             loss = calc_loss(neighbors_trajectories, first_stage_trajectory, ego, scores, weights, \
                              ego_gt_future, neighbors_gt_future, neighbors_future_valid)
             # second stage prediction
             second_stage_trajectory = batch[8].to(args.device)
-            print(f'first_stage_trajectory: {first_stage_trajectory.shape}....second_stage_trajectory: {second_stage_trajectory.shape}')
+            # print(f'first_stage_trajectory: {first_stage_trajectory.shape}....second_stage_trajectory: {second_stage_trajectory.shape}')
 
             neighbors_trajectories, scores, ego, weights = \
                 decoder(encoder_outputs, second_stage_trajectory, inputs['neighbor_agents_past'], 80)
@@ -76,13 +77,61 @@ def train_epoch(data_loader, encoder, decoder, optimizer):
         
     return np.mean(epoch_loss), epoch_metrics
 
+# 假设在valid_epoch函数中的绘图部分
+# 已有代码: draw_trajectory(neighbors_gt_future[:1], predictions[:1])
+
+# 替换为以下代码来专门绘制10个周边车辆的预测轨迹
+
+def draw_agent_predictions(gt_trajectories, pred_trajectories,n):
+    # 获取batch中的第一个样本
+    gt_batch = gt_trajectories[0].cpu().detach().numpy()  # 形状: [10, 80, 3]
+
+    # 选择预测中的第一个候选轨迹(或者可以选择得分最高的轨迹)
+    pred_batch = pred_trajectories[0, 0].cpu().detach().numpy()  # 形状: [10, 80, 3]
+
+    plt.figure(figsize=(10, 10))
+
+    # 可选: 绘制地图元素(如果有地图数据)
+    # create_map_raster(lanes, crosswalks, route_lanes)
+
+    # 为每辆车分配不同颜色以区分
+    colors = plt.cm.get_cmap('tab10', 10)  # 10种不同的颜色
+
+    # 绘制真实轨迹(虚线表示)
+    for i in range(gt_batch.shape[0]):  # 遍历10辆车
+        if np.any(gt_batch[i]):  # 确保轨迹有效
+            plt.plot(gt_batch[i, :, 0], gt_batch[i, :, 1],
+                     '--', color=colors(i), linewidth=2,
+                     label=f'Agent {i} (GT)')
+
+    # 绘制预测轨迹(实线表示)
+    for i in range(pred_batch.shape[0]):  # 遍历10辆车
+        if np.any(pred_batch[i]):  # 确保轨迹有效
+            # 打印出轨迹的长度，通过计算首尾点的距离
+            distance = np.linalg.norm(pred_batch[i, -1, :2] - pred_batch[i, 0, :2])
+            print(f'Agent {i} Predicted Trajectory Length: {distance:.2f} meters')
+            plt.plot(pred_batch[i, :, 0], pred_batch[i, :, 1],
+                     '-', color=colors(i), linewidth=1,
+                     label=f'Agent {i} (Pred)')
+
+    plt.title('10 Agents Trajectory Prediction Visualization')
+    plt.xlabel('X Coordinate')
+    plt.ylabel('Y Coordinate')
+    plt.axis('equal')  # 保持x和y轴比例一致
+    plt.legend(loc='upper right', bbox_to_anchor=(1.2, 1))
+    plt.grid(True)
+
+    # 保存图像
+    plt.tight_layout()
+    plt.savefig('agent_trajectories_prediction{}.png'.format(n), dpi=300)
+    plt.close()
 
 def valid_epoch(data_loader, encoder, decoder):
     epoch_loss = []
     epoch_metrics = []
     encoder.eval()
     decoder.eval()
-
+    n = 0
     with tqdm(data_loader, desc="Validation", unit="batch") as data_epoch:
         for batch in data_epoch:
             # prepare data for predictor
@@ -123,7 +172,10 @@ def valid_epoch(data_loader, encoder, decoder):
             epoch_loss.append(loss.item())
             data_epoch.set_postfix(loss='{:.4f}'.format(np.mean(epoch_loss)))
 
+            draw_agent_predictions(neighbors_gt_future[:1], neighbors_trajectories[:1], n)
+            n = n + 1
     epoch_metrics = np.array(epoch_metrics)
+
     planningADE, planningFDE = np.mean(epoch_metrics[:, 0]), np.mean(epoch_metrics[:, 1])
     predictionADE, predictionFDE = np.mean(epoch_metrics[:, 2]), np.mean(epoch_metrics[:, 3])
     epoch_metrics = [planningADE, planningFDE, predictionADE, predictionFDE]
@@ -204,7 +256,7 @@ def model_training(args):
 if __name__ == "__main__":
     # Arguments
     parser = argparse.ArgumentParser(description='Training')
-    parser.add_argument('--name', type=str, help='log name', default="DTPP_training_1")
+    parser.add_argument('--name', type=str, help='log name', default="DTPP_training_2")
     parser.add_argument('--seed', type=int, help='fix random seed', default=3407)
     parser.add_argument('--train_set', type=str, help='path to training data',default="/home/xiaoyu/PhD_Work/nuplan_prediction_planner/nuplan/processed_data/train")
     parser.add_argument('--valid_set', type=str, help='path to validation data',default="/home/xiaoyu/PhD_Work/nuplan_prediction_planner/nuplan/processed_data/valid")

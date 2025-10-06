@@ -86,10 +86,10 @@ class AgentDecoder(nn.Module):
 
     def forward(self, encoding, current_state):
         encoding = torch.reshape(encoding, (encoding.shape[0], self._max_branch, self._max_time, 512))
-        print(f'encoding_AgentDecoder.shape = {encoding.shape}')
+        # print(f'encoding_AgentDecoder.shape = {encoding.shape}')
         agent_traj = self.traj_decoder(encoding).reshape(encoding.shape[0], self._max_branch, self._max_time*10, 3)
-        print(f'agent_traj.shape = {agent_traj.shape}')
-        print(f'current_state.shape = {current_state.shape}')
+        # print(f'agent_traj.shape = {agent_traj.shape}')
+        # print(f'current_state.shape = {current_state.shape}')
         agent_traj += current_state[:, None, None, :3]
 
         return agent_traj
