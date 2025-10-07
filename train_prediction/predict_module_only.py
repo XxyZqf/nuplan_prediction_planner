@@ -112,13 +112,58 @@ class CrossTransformer(nn.Module):
         value：值向量，与键向量对应的数据值
         mask：可选的掩码，用于标记哪些位置的数据是有效的（非填充值）
         """
-        # print(f'query1.shape: {query.shape}')
-        # print(f'key.shape: {key.shape}')
-        # print(f'value.shape: {value.shape}')
+        print(f'query1.shape: {query.shape}')
+        print(f'key.shape: {key.shape}')
+        print(f'value.shape: {value.shape}')
         attention_output, _ = self.cross_attention(query, key, value, key_padding_mask=mask)
         output = self.transformer(attention_output)
         # print(f'output_cross_transformer.shape: {output.shape}')
         return output
+
+
+class MultiModalTransformer(nn.Module):
+    def __init__(self, modes=10, output_dim=256):
+        super(MultiModalTransformer, self).__init__()
+        self.modes = modes
+        self.attention = nn.ModuleList([nn.MultiheadAttention(256, 4, 0.1, batch_first=True) for _ in range(modes)])
+        self.ffn = nn.Sequential(nn.LayerNorm(256), nn.Linear(256, 1024), nn.ReLU(), nn.Dropout(0.1), nn.Linear(1024, output_dim), nn.LayerNorm(output_dim))
+
+    def forward(self, query, key, value, mask=None):
+        attention_output = []
+        for i in range(self.modes):
+            attention_output.append(self.attention[i](query, key, value, key_padding_mask=mask)[0])
+        attention_output = torch.stack(attention_output, dim=1)
+        output = self.ffn(attention_output)
+
+        return output
+
+# Transformer-based encoders
+class Agent2Agent(nn.Module):
+    def __init__(self):
+        super(Agent2Agent, self).__init__()
+        encoder_layer = nn.TransformerEncoderLayer(d_model=256, nhead=8, dim_feedforward=1024, activation='relu', batch_first=True)
+        self.interaction_net = nn.TransformerEncoder(encoder_layer, num_layers=2)
+
+    def forward(self, inputs, mask=None):
+        output = self.interaction_net(inputs, src_key_padding_mask=mask)
+
+        return output
+
+class Agent2Map(nn.Module):
+    def __init__(self):
+        super(Agent2Map, self).__init__()
+        self.lane_attention = CrossTransformer()
+        self.crosswalk_attention = CrossTransformer()
+        self.map_attention = MultiModalTransformer()
+
+    def forward(self, actor, lanes, crosswalks, mask):
+        # lanes_actor = [self.lane_attention(query, lanes[:, i], lanes[:, i]) for i in range(lanes.shape[1])]
+        # crosswalks_actor = [self.crosswalk_attention(query, crosswalks[:, i], crosswalks[:, i]) for i in range(crosswalks.shape[1])]
+        # 合并车道和人行横道
+        map_actor = torch.cat([lanes, crosswalks], dim=1)
+        output = self.map_attention(actor, map_actor, map_actor, mask).squeeze(2)
+
+        return map_actor, output
 
 class AgentDecoder(nn.Module):
     def __init__(self, max_time, max_branch):
@@ -129,19 +174,16 @@ class AgentDecoder(nn.Module):
             nn.Linear(256, 256),
             nn.LayerNorm(256),
             nn.ELU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.1),
             nn.Linear(256, 128),
             nn.LayerNorm(128),
             nn.ELU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.1),
             nn.Linear(128, 3 * 10)
         )
     def forward(self, encoding, current_state):
         encoding = torch.reshape(encoding, (encoding.shape[0], self._max_branch, self._max_time, 256))
-        # print(f'encoding_AgentDecoder.shape = {encoding.shape}')
         agent_traj = self.traj_decoder(encoding).reshape(encoding.shape[0], self._max_branch, self._max_time*10, 3)
-        # print(f'agent_traj.shape = {agent_traj.shape}')
-        # print(f'current_state.shape = {current_state.shape}')
         agent_traj += current_state[:, None, None, :3]
 
         return agent_traj
@@ -319,11 +361,10 @@ class Predictor(nn.Module):
         self.lane_net = VectorMapEncoder(self._lane_feature, self._lane_len)
         self.crosswalk_net = VectorMapEncoder(self._crosswalk_feature, self._crosswalk_len)
 
-        # 注意力机制encoder
-        attention_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=dim * 4,
-                                                     activation=F.gelu, dropout=dropout, batch_first=True)
-        self.fusion_encoder = nn.TransformerEncoder(attention_layer, layers, enable_nested_tensor=False)
         # attention layers
+        self.agent_map = Agent2Map()
+        self.agent_agent = Agent2Agent()
+
         # decode layers
         self._neighbors = neighbors
         self._nheads = n_heads
@@ -343,14 +384,33 @@ class Predictor(nn.Module):
         # 1.map encoding
         encoded_map_lanes, lanes_mask = self.lane_net(map_lanes)
         encoded_map_crosswalks, crosswalks_mask = self.crosswalk_net(map_crosswalks)
+        # print(f'lanes_mask: {lanes_mask.shape}....crosswalks_mask: {crosswalks_mask.shape}')
+        map_mask = torch.cat([lanes_mask, crosswalks_mask], dim=1)
 
         # 2.attention fusion encoding
-        input = torch.cat([encoded_actors, encoded_map_lanes, encoded_map_crosswalks], dim=1)
-        mask = torch.cat([actors_mask, lanes_mask, crosswalks_mask], dim=1)
-        encoding = self.fusion_encoder(input, src_key_padding_mask=mask)
-        # 将 encoding 从 16×236 补齐为 16×240
-        supplement = torch.zeros(encoding.shape[0], 240 - encoding.shape[1],encoding.shape[2], device=encoding.device)
+        # 计算智能体之间的交互
+        agent_agent = self.agent_agent(encoded_actors, actors_mask)
+        # print(f'agent_agent...........: {agent_agent.shape}....encoded_map_lanes: {encoded_map_lanes.shape}....'
+        #       f'encoded_map_crosswalks: {encoded_map_crosswalks.shape}')
+        # 计算每个智能体与地图之间的交互
+        map_feature = []
+        agent_map = []
+
+        # 智能体和地图交互
+        output = self.agent_map(agent_agent, encoded_map_lanes, encoded_map_crosswalks, map_mask)
+        map_feature.append(output[0])
+        agent_map.append(output[1])
+
+        # 将结果堆叠成张量
+        map_feature = torch.stack(map_feature, dim=1)
+        agent_map = torch.stack(agent_map, dim=2)
+        # print(f'map_feature: {map_feature.shape}....agent_map: {agent_map.shape}')
+
+        agent_map_reshaped = agent_map.view(agent_map.shape[0], 210, 256)
+        encoding = torch.cat([agent_agent,agent_map_reshaped], dim=1)
+        supplement = torch.zeros(encoding.shape[0], 240 - encoding.shape[1], encoding.shape[2], device=encoding.device)
         encoding = torch.cat([encoding, supplement], dim=1)
+        # print(f'encoding: {encoding.shape}')
 
         # 3.decoding
         # 3.1 准备预测所需的当前状态
@@ -360,6 +420,7 @@ class Predictor(nn.Module):
         agents_trajecotries = []
         for i in range(self._neighbors):
             trajectory = self.predict(encoding, current_states[:, i])
+
             #打印出轨迹的长度
             agents_trajecotries.append(trajectory)
 

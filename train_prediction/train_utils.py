@@ -132,7 +132,7 @@ def MFMA_loss(predictions, scores, ground_truth, weights):
     label = torch.zeros(scores.shape[0], dtype=torch.long).to(scores.device)
     irl_loss = F.cross_entropy(scores, label)
 
-    return 1.2* cmp_loss.mean() + irl_loss
+    return 1.5* cmp_loss.mean() + irl_loss
 
 def motion_metrics(prediction_trajectories, neighbors_future,scores, weights):
     best_idx = torch.argmax(scores, dim=-1)
